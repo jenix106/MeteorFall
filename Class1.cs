@@ -18,38 +18,19 @@ namespace MeteorFall
         public override void Throw(Vector3 velocity)
         {
             base.Throw(velocity);
-            guidedProjectile.item.GetComponent<MeteorProjectileComponent>().creature = spellCaster.mana.creature;
-        }
-    }
-    public class MeteorProjectile : ItemModule
-    {
-        public override void OnItemLoaded(Item item)
-        {
-            base.OnItemLoaded(item);
-            item.gameObject.AddComponent<MeteorProjectileComponent>();
-        }
-    }
-    public class MeteorProjectileComponent : MonoBehaviour
-    {
-        Item item;
-        public Creature creature;
-        public void Start()
-        {
-            item = GetComponent<Item>();
-            item.mainCollisionHandler.OnCollisionStartEvent += MainCollisionHandler_OnCollisionStartEvent;
-            item.disallowDespawn = true;
+            guidedProjectile.OnProjectileCollisionEvent += GuidedProjectile_OnProjectileCollisionEvent;
+            guidedProjectile.item.disallowDespawn = true;
         }
 
-        private void MainCollisionHandler_OnCollisionStartEvent(CollisionInstance collisionInstance)
+        private void GuidedProjectile_OnProjectileCollisionEvent(ItemMagicProjectile projectile, CollisionInstance collisionInstance)
         {
-            collisionInstance.ignoreDamage = true;
             Catalog.GetData<ItemData>("MeteorFall").SpawnAsync(meteor =>
             {
-                meteor.gameObject.AddComponent<MeteorComponent>().creature = creature;
-                //meteor.transform.position = new Vector3(collisionInstance.contactPoint.x, collisionInstance.contactPoint.y + 300, collisionInstance.contactPoint.z);
-                meteor.rb.AddForce(Vector3.down * 500, ForceMode.VelocityChange);
+                meteor.gameObject.AddComponent<MeteorComponent>().creature = spellCaster.mana.creature;
+                meteor.physicBody.AddForce(Vector3.down * 500, ForceMode.VelocityChange);
                 meteor.Throw();
             }, new Vector3(collisionInstance.contactPoint.x, collisionInstance.contactPoint.y + 2000, collisionInstance.contactPoint.z));
+            projectile.OnProjectileCollisionEvent -= GuidedProjectile_OnProjectileCollisionEvent;
         }
     }
     public class MeteorComponent : MonoBehaviour
@@ -64,13 +45,13 @@ namespace MeteorFall
         }
         private void MainCollisionHandler_OnCollisionStartEvent(CollisionInstance collisionInstance)
         {
+            item.mainCollisionHandler.OnCollisionStartEvent -= MainCollisionHandler_OnCollisionStartEvent;
             StartCoroutine(Impact(collisionInstance.contactPoint, collisionInstance.contactNormal, collisionInstance.sourceColliderGroup.transform.up));
             item.Hide(true);
             item.colliderGroups[0].colliders[0].isTrigger = true;
-            item.rb.velocity = Vector3.zero;
-            item.rb.Sleep();
+            item.physicBody.velocity = Vector3.zero;
+            item.physicBody.rigidBody.Sleep();
             item.disallowDespawn = false;
-            item.mainCollisionHandler.OnCollisionStartEvent -= MainCollisionHandler_OnCollisionStartEvent;
         }
         private IEnumerator Impact(Vector3 contactPoint, Vector3 contactNormal, Vector3 contactNormalUpward)
         {
@@ -80,7 +61,7 @@ namespace MeteorFall
             Collider[] sphereContacts = Physics.OverlapSphere(contactPoint, 100, 218119169);
             List<Creature> creaturesPushed = new List<Creature>();
             List<Rigidbody> rigidbodiesPushed = new List<Rigidbody>();
-            rigidbodiesPushed.Add(item.rb);
+            rigidbodiesPushed.Add(item.physicBody.rigidBody);
             creaturesPushed.Add(creature);
             float waveDistance = 0.0f;
             yield return new WaitForEndOfFrame();
@@ -107,6 +88,30 @@ namespace MeteorFall
                 }
                 foreach (Collider collider in sphereContacts)
                 {
+                    Breakable breakable = collider.attachedRigidbody?.GetComponentInParent<Breakable>();
+                    if (breakable != null && Vector3.Distance(contactPoint, collider.transform.position) < waveDistance)
+                    {
+                        if(!breakable.IsBroken && breakable.canInstantaneouslyBreak)
+                        breakable.Break();
+                        for (int index = 0; index < breakable.subBrokenItems.Count; ++index)
+                        {
+                            Rigidbody rigidBody = breakable.subBrokenItems[index].physicBody.rigidBody;
+                            if (rigidBody && !rigidbodiesPushed.Contains(rigidBody))
+                            {
+                                rigidBody.AddExplosionForce(75, contactPoint, 100, 0f, ForceMode.VelocityChange);
+                                rigidbodiesPushed.Add(rigidBody);
+                            }
+                        }
+                        for (int index = 0; index < breakable.subBrokenBodies.Count; ++index)
+                        {
+                            PhysicBody subBrokenBody = breakable.subBrokenBodies[index];
+                            if (subBrokenBody && !rigidbodiesPushed.Contains(subBrokenBody.rigidBody))
+                            {
+                                subBrokenBody.rigidBody.AddExplosionForce(75, contactPoint, 100, 0f, ForceMode.VelocityChange);
+                                rigidbodiesPushed.Add(subBrokenBody.rigidBody);
+                            }
+                        }
+                    }
                     if (collider.attachedRigidbody != null && !collider.attachedRigidbody.isKinematic && Vector3.Distance(contactPoint, collider.transform.position) < waveDistance)
                     {
                         if (collider.attachedRigidbody.gameObject.layer != GameManager.GetLayer(LayerName.NPC) && !rigidbodiesPushed.Contains(collider.attachedRigidbody))
@@ -129,7 +134,7 @@ namespace MeteorFall
         public void Start()
         {
             creature = GetComponent<Creature>();
-            instance = Catalog.GetData<EffectData>("MeteorRagdoll").Spawn(creature.ragdoll.rootPart.transform, true);
+            instance = Catalog.GetData<EffectData>("MeteorRagdoll").Spawn(creature.ragdoll.rootPart.transform, null, true);
             instance.SetRenderer(creature.GetRendererForVFX(), false);
             instance.SetIntensity(1f);
             instance.Play();
